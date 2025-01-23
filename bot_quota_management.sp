@@ -1,6 +1,7 @@
 #include <sourcemod>
 #include <sdktools>
 #include <sdkhooks>
+#include <cstrike>
 
 // Declare ConVar handles
 Handle bot_quota_cvar;
@@ -13,7 +14,7 @@ public Plugin myinfo =
     name        = "[Bot Quota] Dynamic Management",
     author      = "+SyntX",
     description = "Keeps total players (humans + bots) based on user-defined limits.",
-    version     = "1.7",
+    version     = "1.8",
     url         = "http://steamcommunity.com/id/SyntX34 && https://github.com/SyntX34"
 };
 
@@ -36,6 +37,8 @@ public void OnPluginStart()
     CreateTimer(3.0, AdjustBots, _, TIMER_REPEAT | TIMER_FLAG_NO_MAPCHANGE);
     AutoExecConfig(true, "bot_quota_manager");
     HookEvent("round_end", RoundEnd);
+    HookEvent("player_connect", OnPlayerConnect);
+    HookEvent("player_disconnect", OnPlayerDisConnect);
 }
 
 public void OnMapStart()
@@ -100,16 +103,20 @@ public void BalanceBotTeams()
     int team1Bots = 0;
     int team2Bots = 0;
 
+    // Fetch minimum bot value
+    int g_MinBots = GetConVarInt(min_bots);
+
+    // Count the current bots on each team
     for (int client = 1; client <= MaxClients; client++)
     {
         if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client))
         {
             int team = GetClientTeam(client);
-            if (team == 2) // Team T
+            if (team == CS_TEAM_T)
             {
                 team1Bots++;
             }
-            else if (team == 3) // Team CT
+            else if (team == CS_TEAM_CT)
             {
                 team2Bots++;
             }
@@ -118,13 +125,23 @@ public void BalanceBotTeams()
 
     PrintToServer("[DEBUG] BalanceBotTeams: team1Bots=%d, team2Bots=%d", team1Bots, team2Bots);
 
-    // Ensure no team has more than 2 bots
-    if (team1Bots > 2)
+    int botsPerTeam = g_MinBots / 2;
+    int extraBot = g_MinBots % 2;
+
+    if (team1Bots < botsPerTeam + extraBot)
     {
-        int botsToRemove = team1Bots - 2;
+        int botsToAdd = botsPerTeam + extraBot - team1Bots;
+        for (int i = 0; i < botsToAdd; i++)
+        {
+            AddBotToTeam(CS_TEAM_T);
+        }
+    }
+    else if (team1Bots > botsPerTeam)
+    {
+        int botsToRemove = team1Bots - botsPerTeam;
         for (int client = 1; client <= MaxClients && botsToRemove > 0; client++)
         {
-            if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client) && GetClientTeam(client) == 2)
+            if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client) && GetClientTeam(client) == CS_TEAM_T)
             {
                 KickClient(client, "Too many bots on T team");
                 botsToRemove--;
@@ -132,17 +149,43 @@ public void BalanceBotTeams()
         }
     }
 
-    if (team2Bots > 2)
+    if (team2Bots < botsPerTeam)
     {
-        int botsToRemove = team2Bots - 2;
+        int botsToAdd = botsPerTeam - team2Bots;
+        for (int i = 0; i < botsToAdd; i++)
+        {
+            AddBotToTeam(CS_TEAM_CT);
+        }
+    }
+    else if (team2Bots > botsPerTeam)
+    {
+        int botsToRemove = team2Bots - botsPerTeam;
         for (int client = 1; client <= MaxClients && botsToRemove > 0; client++)
         {
-            if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client) && GetClientTeam(client) == 3)
+            if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client) && GetClientTeam(client) == CS_TEAM_CT)
             {
                 KickClient(client, "Too many bots on CT team");
                 botsToRemove--;
             }
         }
+    }
+
+    PrintToServer("[DEBUG] BalanceBotTeams After Adjustment: team1Bots=%d, team2Bots=%d", team1Bots, team2Bots);
+}
+
+public void AddBotToTeam(int team)
+{
+    if (team == CS_TEAM_T)
+    {
+        // Add a bot to Team T
+        CreateFakeClient("Terrorist Bot");
+        //PrintToServer("[DEBUG] Added bot to Team T");
+    }
+    else if (team == CS_TEAM_CT)
+    {
+        // Add a bot to Team CT
+        CreateFakeClient("Counter-Terrorist Bot");
+        //PrintToServer("[DEBUG] Added bot to Team CT");
     }
 }
 
@@ -152,10 +195,10 @@ public int GetHumanPlayerCount()
 
     for (int client = 1; client <= MaxClients; client++)
     {
-        if (IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client))
+        if (IsClientConnected(client) && IsClientInGame(client) && !IsFakeClient(client) && !IsClientObserver(client))
         {
             int team = GetClientTeam(client);
-            if (team != 1) // Exclude spectators (assuming team 1 is spectators)
+            if (team != CS_TEAM_SPECTATOR)
             {
                 humanCount++;
             }
@@ -165,7 +208,6 @@ public int GetHumanPlayerCount()
     return humanCount;
 }
 
-
 public int Max(int a, int b)
 {
     return (a > b) ? a : b;
@@ -174,4 +216,45 @@ public int Max(int a, int b)
 public int Min(int a, int b)
 {
     return (a < b) ? a : b;
+}
+
+public void OnPlayerConnect(Event event, const char[] name, bool dontBroadcast)
+{
+    int humanCount = GetHumanPlayerCount();
+
+    int g_MaxBots = GetConVarInt(max_bots);
+    if (humanCount > g_MaxBots)
+    {
+        // Remove excess bots
+        for (int client = 1; client <= MaxClients; client++)
+        {
+            if (IsClientConnected(client) && IsClientInGame(client) && IsFakeClient(client))
+            {
+                KickClient(client, "Too many bots, player joined.");
+            }
+        }
+    }
+}
+
+public void OnPlayerDisConnect(Event event, const char[] name, bool dontBroadcast)
+{
+    int humanCount = GetHumanPlayerCount();
+    int g_MinBots = GetConVarInt(min_bots);
+    int g_MaxBots = GetConVarInt(max_bots);
+
+    if (humanCount < g_MinBots)
+    {
+        int botsToAdd = g_MinBots - humanCount;
+        for (int i = 0; i < botsToAdd && MaxClients - humanCount > 0; i++)
+        {
+            AddBotToTeam(CS_TEAM_T);
+            humanCount++;
+        }
+
+        for (int i = 0; i < botsToAdd && MaxClients - humanCount > 0; i++)
+        {
+            AddBotToTeam(CS_TEAM_CT);
+            humanCount++;
+        }
+    }
 }
